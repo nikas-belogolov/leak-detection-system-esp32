@@ -34,7 +34,21 @@
 #include "ulp.h"
 #include "ulp_main.h"
 
+#include "esp_system.h"
+
+// Reset button
+#include "iot_button.h"
+#include "button_gpio.h"
+
 static const char *TAG = "app";
+
+#if CONFIG_IDF_TARGET_ESP32
+const int ext_wakeup_pin_0 = 25;
+#else
+const int ext_wakeup_pin_0 = 3;
+#endif
+
+#define BUTTON_ACTIVE_LEVEL 0
 
 EventGroupHandle_t app_event_group = NULL;
 
@@ -49,20 +63,36 @@ void nvs_init() {
         /* NVS partition was truncated
          * and needs to be erased */
         ESP_ERROR_CHECK(nvs_flash_erase());
-        ESP_ERROR_CHECK(nvs_flash_init());
+        ret = nvs_flash_init();
     }
+    ESP_ERROR_CHECK(ret);
+}
+
+static void reset_button_event_cb(void *arg, void *data)
+{
+    esp_wifi_restore();
+}
+
+void reset_button_init(uint32_t button_num)
+{
+    button_config_t btn_cfg = {0};
+    button_gpio_config_t gpio_cfg = {
+        .gpio_num = button_num,
+        .active_level = BUTTON_ACTIVE_LEVEL,
+        .enable_power_save = true,
+    };
+
+    button_handle_t btn;
+    esp_err_t ret = iot_button_new_gpio_device(&btn_cfg, &gpio_cfg, &btn);
+    assert(ret == ESP_OK);
+
+    ret |= iot_button_register_cb(btn, BUTTON_SINGLE_CLICK, NULL, reset_button_event_cb, NULL);
+
+    ESP_ERROR_CHECK(ret);
 }
 
 void app_main(void)
 {
-    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
-    if (cause != ESP_SLEEP_WAKEUP_ULP) {
-        printf("Not ULP wakeup, initializing ULP\n");
-        init_ulp_program();
-    } else {
-        printf("ULP wakeup\n");
-    }
-
     // Initialize Power Management
     esp_pm_config_t pm_config = {
         .max_freq_mhz = 160,
@@ -74,9 +104,23 @@ void app_main(void)
     // Initialize NVS
     nvs_init();
 
+    esp_sleep_wakeup_cause_t cause = esp_sleep_get_wakeup_cause();
+    ESP_LOGI(TAG, "Wakeup cause: %d", cause);
+
+    if (cause != ESP_SLEEP_WAKEUP_ULP) init_ulp_program();
+
+    if (cause & BIT(ESP_SLEEP_WAKEUP_EXT0)) {
+        esp_wifi_restore();
+    }
+
+    // Enable wakeup on reset button press
+    reset_button_init(ext_wakeup_pin_0);
+    rtc_gpio_pullup_en(ext_wakeup_pin_0);
+    rtc_gpio_pulldown_dis(ext_wakeup_pin_0);
+    esp_sleep_enable_ext0_wakeup(ext_wakeup_pin_0, 0);
+
     app_device_id_init();
     const char* device_id = app_get_device_id();
-
     ESP_LOGI(TAG, "Device Unique ID: %s, len: %d", device_id, strlen(device_id));
 
     /* Initialize TCP/IP */
@@ -116,24 +160,10 @@ void app_main(void)
     ESP_LOGI(TAG, "Connected to wifi");
 
     app_sntp_start();
+
+    xEventGroupWaitBits(app_event_group, TIME_SYNCED_BIT, true, true, portMAX_DELAY);
+
     app_mqtt_start();
-
-    BaseType_t xReturned;
-    TaskHandle_t xHandle = NULL;
-
-    xReturned = xTaskCreate(
-        app_mqtt_task,
-        "mqtt_task",
-        8192,
-        NULL,
-        5,
-        &xHandle);
-
-    if (xReturned != pdPASS) {
-        ESP_LOGE(TAG, "Failed to create MQTT task");
-    } else {
-        ESP_LOGI(TAG, "MQTT task created successfully");
-    }
 }
 
 void init_ulp_program(void) {

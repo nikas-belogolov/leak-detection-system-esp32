@@ -71,6 +71,7 @@ void prov_event_handler(void* arg, esp_event_base_t event_base,
                          "Wi-Fi station authentication failed" : "Wi-Fi access-point not found");
                 vTaskDelay(3000 / portTICK_PERIOD_MS);
                 wifi_prov_mgr_reset_sm_state_on_failure();
+                app_mqtt_stop();
                 break;
             }
             case WIFI_PROV_CRED_SUCCESS:
@@ -91,16 +92,9 @@ void prov_event_handler(void* arg, esp_event_base_t event_base,
             case WIFI_EVENT_STA_DISCONNECTED:
                 ESP_LOGI(TAG, "Wi-Fi disconnected, retrying connection...");
                 xEventGroupClearBits(app_event_group, WIFI_CONNECTED_BIT);
-
-                if (++connection_retries >= MAX_RETRIES) {
-                    ESP_LOGI(TAG, "Max retries reached. Restarting provisioning");
-                    esp_wifi_restore();
-                    esp_restart();
-                } else {
-                    ESP_LOGI(TAG, "Reconnecting to WiFi...");
-                    esp_wifi_connect();
-                }
-                vTaskDelay(10000 / portTICK_PERIOD_MS);
+                ESP_LOGI(TAG, "Reconnecting to WiFi...");
+                esp_wifi_connect();
+                vTaskDelay(30000 / portTICK_PERIOD_MS);
                 break;
             default:
                 break;
@@ -116,9 +110,17 @@ static esp_err_t device_id_endpoint_handler(uint32_t session_id, const uint8_t *
                                                 uint8_t **outbuf, ssize_t *outlen, void *priv_data)
 {
     const char* device_id = app_get_device_id();
+    size_t len = strlen(device_id);
 
-    *outbuf = (uint8_t *)device_id;
-    *outlen = strlen(device_id);
+    uint8_t *resp = malloc(len);
+    if (!resp) {
+        ESP_LOGE(TAG, "malloc failed");
+        return ESP_ERR_NO_MEM;
+    }
+    memcpy(resp, device_id, len);
+
+    *outbuf = resp;
+    *outlen = len;
 
     return ESP_OK;
 }

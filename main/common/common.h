@@ -5,8 +5,7 @@
 #include "freertos/event_groups.h"
 
 static const int WIFI_CONNECTED_BIT = BIT0;
-static const int MQTT_CONNECTED_BIT = BIT1;
-static const int TIME_SYNCED_BIT = BIT2;
+static const int TIME_SYNCED_BIT = BIT1;
 
 extern EventGroupHandle_t app_event_group;
 
